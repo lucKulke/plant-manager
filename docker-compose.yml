@@ -1,0 +1,45 @@
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./infra/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto-data:/mosquitto/data
+
+  api:
+    build: ./api
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - ./data:/data
+      - ./api:/app
+    depends_on:
+      - mqtt
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  worker:
+    build: ./api
+    env_file: .env
+    volumes:
+      - ./data:/data
+      - ./api:/app
+    depends_on:
+      - api
+      - mqtt
+    command: python -m app.worker.main
+
+  web:
+    build: ./webapp
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./webapp/src:/app/src
+    depends_on:
+      - api
+    command: npm run dev
+
+volumes:
+  mosquitto-data:
