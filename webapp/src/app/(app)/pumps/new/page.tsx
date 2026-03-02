@@ -1,6 +1,7 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { apiFetch, ApiError } from "@/lib/api";
 import type { Group, Pump } from "@/lib/types";
@@ -16,10 +17,21 @@ import {
 } from "@/components/ui/select";
 
 export default function NewPumpPage() {
+  return (
+    <Suspense fallback={<p className="text-muted-foreground">Loading...</p>}>
+      <NewPumpForm />
+    </Suspense>
+  );
+}
+
+function NewPumpForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const preselectedGroupId = searchParams.get("group_id") ?? "";
+
   const [name, setName] = useState("");
   const [deviceId, setDeviceId] = useState("");
-  const [groupId, setGroupId] = useState<string>("");
+  const [groupId, setGroupId] = useState<string>(preselectedGroupId);
   const [groups, setGroups] = useState<Group[]>([]);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -30,6 +42,10 @@ export default function NewPumpPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (!groupId) {
+      setError("Please select a group");
+      return;
+    }
     setSubmitting(true);
     setError("");
     try {
@@ -38,7 +54,7 @@ export default function NewPumpPage() {
         body: JSON.stringify({
           name,
           device_id: deviceId,
-          group_id: groupId && groupId !== "none" ? Number(groupId) : null,
+          group_id: Number(groupId),
         }),
       });
       router.push(`/pumps/${pump.id}`);
@@ -87,10 +103,9 @@ export default function NewPumpPage() {
           <Label>Group</Label>
           <Select value={groupId} onValueChange={setGroupId}>
             <SelectTrigger className="mt-1 w-full">
-              <SelectValue placeholder="None" />
+              <SelectValue placeholder="Select a group" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="none">None</SelectItem>
               {groups.map((g) => (
                 <SelectItem key={g.id} value={String(g.id)}>
                   {g.name}

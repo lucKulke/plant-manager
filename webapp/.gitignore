@@ -14,9 +14,10 @@
 /coverage
 
 # next.js
-/.next/
+./src/apnext/
 /out/
 
+*.next/*
 # production
 /build
 

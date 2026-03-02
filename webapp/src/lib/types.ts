@@ -83,3 +83,30 @@ export interface CompileResponse {
   build_id: string;
   manifest_url: string;
 }
+
+export interface MoisturePoint {
+  ts: string;
+  plant_name: string;
+  value: number;
+}
+
+export interface WateringTotal {
+  plant_name: string;
+  total_duration_s: number;
+  count: number;
+}
+
+export interface PumpFlowPoint {
+  ts: string;
+  pump_name: string;
+  flow_l_min: number;
+}
+
+export interface DashboardStats {
+  total_plants: number;
+  total_groups: number;
+  total_pumps: number;
+  moisture_history: MoisturePoint[];
+  watering_totals: WateringTotal[];
+  pump_flow_history: PumpFlowPoint[];
+}

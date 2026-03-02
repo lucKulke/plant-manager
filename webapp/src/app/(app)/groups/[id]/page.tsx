@@ -123,10 +123,15 @@ export default function GroupDetailPage() {
 
       {/* Assigned Plants */}
       <section>
-        <h2 className="mb-4 text-lg font-semibold">Plants</h2>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Plants</h2>
+          <Button asChild size="sm">
+            <Link href={`/plants/new?group_id=${groupId}`}>Add Plant</Link>
+          </Button>
+        </div>
         {plants.length === 0 ? (
           <p className="text-muted-foreground">
-            No plants assigned to this group.
+            No plants in this group yet. Add your first plant.
           </p>
         ) : (
           <div className="space-y-2">
@@ -153,10 +158,17 @@ export default function GroupDetailPage() {
 
       {/* Assigned Pump */}
       <section>
-        <h2 className="mb-4 text-lg font-semibold">Pump</h2>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Pump</h2>
+          {pumps.length === 0 && (
+            <Button asChild size="sm">
+              <Link href={`/pumps/new?group_id=${groupId}`}>Add Pump</Link>
+            </Button>
+          )}
+        </div>
         {pumps.length === 0 ? (
           <p className="text-muted-foreground">
-            No pump assigned to this group.
+            No pump in this group yet. Add a pump to enable watering.
           </p>
         ) : (
           <div className="space-y-2">

@@ -55,11 +55,22 @@ def create_pump(body: PumpCreate, db: Session = Depends(get_db)):
             detail="A pump with this device_id already exists",
         )
 
+    # Enforce max 1 pump per group
+    if body.group_id:
+        existing_pump = (
+            db.query(Pump).filter(Pump.group_id == body.group_id).first()
+        )
+        if existing_pump:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This group already has a pump assigned",
+            )
+
     pump = Pump(**body.model_dump())
     db.add(pump)
     db.commit()
     db.refresh(pump)
-    return PumpOut.model_validate(pump)
+    return _enrich_pump(pump, db)
 
 
 @router.get("/{pump_id}", response_model=PumpOut)
@@ -75,6 +86,19 @@ def update_pump(pump_id: int, body: PumpUpdate, db: Session = Depends(get_db)):
     pump = db.query(Pump).filter(Pump.id == pump_id).first()
     if not pump:
         raise HTTPException(status_code=404, detail="Pump not found")
+
+    # Enforce max 1 pump per group on group change
+    if body.group_id is not None and body.group_id != pump.group_id:
+        existing_pump = (
+            db.query(Pump)
+            .filter(Pump.group_id == body.group_id, Pump.id != pump_id)
+            .first()
+        )
+        if existing_pump:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This group already has a pump assigned",
+            )
 
     for key, value in body.model_dump(exclude_unset=True).items():
         setattr(pump, key, value)
