@@ -1,10 +1,11 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
-import type { Group, Pump, PumpReading } from "@/lib/types";
+import type { BuildStatus, FirmwareBuild, Group, Pump, PumpReading } from "@/lib/types";
 import { FlashDialog } from "@/components/flash-dialog";
+import type { FlashPhase } from "@/components/flash-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -30,6 +31,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { usePumpLive } from "@/hooks/use-pump-live";
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString();
@@ -39,6 +41,7 @@ export default function PumpDetailPage() {
   const params = useParams();
   const router = useRouter();
   const pumpId = Number(params.id);
+  const live = usePumpLive(pumpId);
 
   const [pump, setPump] = useState<Pump | null>(null);
   const [readings, setReadings] = useState<PumpReading[]>([]);
@@ -46,6 +49,56 @@ export default function PumpDetailPage() {
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [flashOpen, setFlashOpen] = useState(false);
+  const [compiling, setCompiling] = useState(false);
+  const [flashPhase, setFlashPhase] = useState<FlashPhase>("form");
+  const [compileError, setCompileError] = useState("");
+  const [manifestUrl, setManifestUrl] = useState("");
+  const compileAbortRef = useRef<AbortController | null>(null);
+
+  function startPolling(buildId: string, mUrl: string) {
+    setCompiling(true);
+    setManifestUrl(mUrl);
+    setCompileError("");
+
+    const controller = new AbortController();
+    compileAbortRef.current = controller;
+
+    (async () => {
+      try {
+        while (!controller.signal.aborted) {
+          await new Promise((r) => setTimeout(r, 3000));
+          if (controller.signal.aborted) return;
+
+          const status = await apiFetch<BuildStatus>(
+            `/firmware/status/${buildId}`,
+          );
+          if (status.status === "done") {
+            setCompiling(false);
+            setFlashPhase("ready");
+            setFlashOpen(true);
+            return;
+          }
+          if (status.status === "failed") {
+            setCompiling(false);
+            setCompileError(status.error ?? "Compilation failed");
+            setFlashPhase("error");
+            setFlashOpen(true);
+            return;
+          }
+        }
+      } catch {
+        if (controller.signal.aborted) return;
+        setCompiling(false);
+        setCompileError("Compilation failed");
+        setFlashPhase("error");
+        setFlashOpen(true);
+      }
+    })();
+  }
+
+  function handleCompileStarted(buildId: string, mUrl: string) {
+    startPolling(buildId, mUrl);
+  }
 
   useEffect(() => {
     async function load() {
@@ -58,6 +111,19 @@ export default function PumpDetailPage() {
       setReadings(r);
       setGroups(g);
       setLoading(false);
+
+      // Check for active firmware builds
+      try {
+        const builds = await apiFetch<FirmwareBuild[]>(
+          `/firmware/builds/active?device_type=pump&device_id=${p.device_id}`,
+        );
+        if (builds.length > 0) {
+          const b = builds[0];
+          startPolling(b.build_id, b.manifest_url);
+        }
+      } catch {
+        // Non-fatal
+      }
     }
     load();
   }, [pumpId]);
@@ -106,9 +172,16 @@ export default function PumpDetailPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setFlashOpen(true)}
+              onClick={() => {
+                setFlashPhase("form");
+                setFlashOpen(true);
+              }}
+              disabled={compiling}
             >
-              Flash Firmware
+              {compiling && (
+                <span className="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+              )}
+              {compiling ? "Compiling..." : "Flash Firmware"}
             </Button>
             <Button
               variant="destructive"
@@ -128,6 +201,10 @@ export default function PumpDetailPage() {
           deviceType="pump"
           deviceId={pump.device_id}
           deviceName={pump.name}
+          onCompileStarted={handleCompileStarted}
+          initialPhase={flashPhase}
+          initialError={compileError}
+          initialManifestUrl={manifestUrl}
         />
 
         {/* Group */}
@@ -161,13 +238,18 @@ export default function PumpDetailPage() {
         {/* Latest Values */}
         <section className="mt-6">
           <h2 className="mb-4 text-lg font-semibold">Current Status</h2>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <Card>
               <CardContent className="p-4">
-                <p className="text-sm text-muted-foreground">Flow Rate</p>
+                <p className="text-sm text-muted-foreground">
+                  Flow Rate
+                  {live.flowLMin !== null && (
+                    <span className="ml-2 inline-block h-2 w-2 rounded-full bg-green-500" title="Live" />
+                  )}
+                </p>
                 <p className="mt-1 text-2xl font-bold">
-                  {pump.latest_flow_l_min !== null
-                    ? `${pump.latest_flow_l_min.toFixed(1)}`
+                  {(live.flowLMin ?? pump.latest_flow_l_min) !== null
+                    ? `${(live.flowLMin ?? pump.latest_flow_l_min!).toFixed(1)}`
                     : "—"}
                   <span className="ml-1 text-sm font-normal text-muted-foreground">
                     L/min
@@ -177,14 +259,58 @@ export default function PumpDetailPage() {
             </Card>
             <Card>
               <CardContent className="p-4">
-                <p className="text-sm text-muted-foreground">Pressure</p>
+                <p className="text-sm text-muted-foreground">
+                  Pressure
+                  {live.pressureBar !== null && (
+                    <span className="ml-2 inline-block h-2 w-2 rounded-full bg-green-500" title="Live" />
+                  )}
+                </p>
                 <p className="mt-1 text-2xl font-bold">
-                  {pump.latest_pressure_bar !== null
-                    ? `${pump.latest_pressure_bar.toFixed(2)}`
+                  {(live.pressureBar ?? pump.latest_pressure_bar) !== null
+                    ? `${(live.pressureBar ?? pump.latest_pressure_bar!).toFixed(2)}`
                     : "—"}
                   <span className="ml-1 text-sm font-normal text-muted-foreground">
                     bar
                   </span>
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <p className="text-sm text-muted-foreground">
+                  Pump
+                  {live.pumpOn !== null && (
+                    <span className="ml-2 inline-block h-2 w-2 rounded-full bg-green-500" title="Live" />
+                  )}
+                </p>
+                <p className="mt-1 text-2xl font-bold">
+                  {live.pumpOn === true ? (
+                    <span className="text-green-600">Running</span>
+                  ) : live.pumpOn === false ? (
+                    "Off"
+                  ) : (
+                    "—"
+                  )}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <p className="text-sm text-muted-foreground">
+                  Device
+                  {live.online !== null && (
+                    <span
+                      className={`ml-2 inline-block h-2 w-2 rounded-full ${live.online ? "bg-green-500" : "bg-red-500"}`}
+                      title={live.online ? "Online" : "Offline"}
+                    />
+                  )}
+                </p>
+                <p className="mt-1 text-2xl font-bold">
+                  {live.online === true
+                    ? "Online"
+                    : live.online === false
+                      ? <span className="text-red-500">Offline</span>
+                      : "—"}
                 </p>
               </CardContent>
             </Card>

@@ -84,6 +84,22 @@ export interface CompileResponse {
   manifest_url: string;
 }
 
+export interface BuildStatus {
+  build_id: string;
+  status: "compiling" | "done" | "failed";
+  error: string | null;
+}
+
+export interface FirmwareBuild {
+  build_id: string;
+  device_type: string;
+  device_id: string;
+  status: "compiling" | "done" | "failed";
+  error: string | null;
+  manifest_url: string;
+  created_at: string;
+}
+
 export interface MoisturePoint {
   ts: string;
   plant_name: string;

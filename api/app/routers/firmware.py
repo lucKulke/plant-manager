@@ -1,13 +1,16 @@
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, require_setup_complete
 from app.database import get_db
+from app.models.firmware_build import FirmwareBuild
 from app.models.firmware_settings import FirmwareSettings
 from app.schemas.firmware import (
+    BuildStatusResponse,
     CompileRequest,
     CompileResponse,
+    FirmwareBuildOut,
     FirmwareSettingsOut,
     FirmwareSettingsUpdate,
 )
@@ -115,7 +118,7 @@ def compile_firmware(body: CompileRequest, db: Session = Depends(get_db)):
                 "mqtt_port": mqtt_port,
                 "ota_password": ota_password,
             },
-            timeout=660.0,
+            timeout=30.0,
         )
     except httpx.ConnectError:
         raise HTTPException(
@@ -128,7 +131,82 @@ def compile_firmware(body: CompileRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Firmware compilation failed: {detail}")
 
     build_id = resp.json()["build_id"]
-    return CompileResponse(build_id=build_id, manifest_url=f"/api/firmware/manifest/{build_id}")
+    manifest_url = f"/api/firmware/manifest/{build_id}"
+
+    # Persist build in DB
+    build = FirmwareBuild(
+        build_id=build_id,
+        device_type=body.device_type,
+        device_id=body.device_id,
+        status="compiling",
+        manifest_url=manifest_url,
+    )
+    db.add(build)
+    db.commit()
+
+    return CompileResponse(build_id=build_id, manifest_url=manifest_url)
+
+
+# ── Build status (authenticated) ────────────────────────────────────────────
+
+
+@router.get(
+    "/status/{build_id}",
+    response_model=BuildStatusResponse,
+    dependencies=[Depends(require_setup_complete), Depends(get_current_user)],
+)
+def get_build_status(build_id: str, db: Session = Depends(get_db)):
+    if not build_id.replace("-", "").isalnum():
+        raise HTTPException(status_code=400, detail="Invalid build_id")
+    try:
+        resp = httpx.get(
+            f"{FIRMWARE_SERVICE_URL}/status/{build_id}",
+            timeout=10.0,
+        )
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Firmware service unavailable")
+
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail="Build not found")
+
+    data = resp.json()
+    status = data["status"]
+    error = data.get("error")
+
+    # Update DB if status changed from compiling
+    if status in ("done", "failed"):
+        row = db.query(FirmwareBuild).filter(FirmwareBuild.build_id == build_id).first()
+        if row and row.status == "compiling":
+            row.status = status
+            row.error = error
+            db.commit()
+
+    return BuildStatusResponse(
+        build_id=data["build_id"],
+        status=status,
+        error=error,
+    )
+
+
+# ── Active builds (authenticated) ───────────────────────────────────────────
+
+
+@router.get(
+    "/builds/active",
+    response_model=list[FirmwareBuildOut],
+    dependencies=[Depends(require_setup_complete), Depends(get_current_user)],
+)
+def get_active_builds(
+    device_type: str | None = Query(None),
+    device_id: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    query = db.query(FirmwareBuild).filter(FirmwareBuild.status == "compiling")
+    if device_type:
+        query = query.filter(FirmwareBuild.device_type == device_type)
+    if device_id:
+        query = query.filter(FirmwareBuild.device_id == device_id)
+    return query.order_by(FirmwareBuild.created_at.desc()).all()
 
 
 # ── Manifest + download (unauthenticated — build_id is unguessable UUID) ─────
@@ -142,7 +220,6 @@ def get_manifest(build_id: str):
     return {
         "name": "Plant Manager Firmware",
         "version": build_id[:8],
-        "home_assistant_domain": "esphome",
         "builds": [
             {
                 "chipFamily": "ESP32-C3",

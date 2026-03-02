@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.mqtt import mqtt_lifespan
-from app.routers import auth, dashboard, firmware, groups, health, plants, pumps, schedules, setup, watering
+from app.routers import auth, dashboard, firmware, groups, health, plants, pumps, schedules, setup, watering, ws
 
 
 @asynccontextmanager
@@ -33,3 +33,4 @@ app.include_router(plants.router)
 app.include_router(pumps.router)
 app.include_router(schedules.router)
 app.include_router(watering.router)
+app.include_router(ws.router)

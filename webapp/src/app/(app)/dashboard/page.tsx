@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import type { DashboardStats } from "@/lib/types";
-import { Droplets, Flower2, Gauge, Sprout } from "lucide-react";
+import { useDashboardLive } from "@/hooks/use-dashboard-live";
+import { Droplets, Flower2, Gauge, Sprout, Zap } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ChartContainer,
@@ -24,6 +25,7 @@ import {
 export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const live = useDashboardLive();
 
   useEffect(() => {
     apiFetch<DashboardStats>("/dashboard/stats").then((s) => {
@@ -132,6 +134,99 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Live device status */}
+      {(Object.keys(live.plants).length > 0 || Object.keys(live.pumps).length > 0) && (
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <Zap className="size-4" />
+            Live Status
+            <span className="inline-block h-2 w-2 rounded-full bg-green-500" title="Connected" />
+          </h2>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {Object.entries(live.plants).map(([deviceId, p]) => (
+              <Card key={`plant-${deviceId}`}>
+                <CardContent className="p-4">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Sprout className="size-4 text-green-600" />
+                      <span className="font-medium">{p.name}</span>
+                    </div>
+                    <span
+                      className={`inline-block h-2.5 w-2.5 rounded-full ${p.online ? "bg-green-500" : p.online === false ? "bg-red-500" : "bg-gray-300"}`}
+                      title={p.online ? "Online" : p.online === false ? "Offline" : "Unknown"}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Moisture</span>
+                      <p className="text-lg font-bold">
+                        {p.moisture !== null ? `${p.moisture.toFixed(0)}%` : "—"}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Valve</span>
+                      <p className="text-lg font-bold">
+                        {p.valveOpen === true ? (
+                          <span className="text-green-600">Open</span>
+                        ) : p.valveOpen === false ? (
+                          "Closed"
+                        ) : (
+                          "—"
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+            {Object.entries(live.pumps).map(([deviceId, p]) => (
+              <Card key={`pump-${deviceId}`}>
+                <CardContent className="p-4">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Gauge className="size-4 text-purple-600" />
+                      <span className="font-medium">{p.name}</span>
+                    </div>
+                    <span
+                      className={`inline-block h-2.5 w-2.5 rounded-full ${p.online ? "bg-green-500" : p.online === false ? "bg-red-500" : "bg-gray-300"}`}
+                      title={p.online ? "Online" : p.online === false ? "Offline" : "Unknown"}
+                    />
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Flow</span>
+                      <p className="text-lg font-bold">
+                        {p.flowLMin !== null ? `${p.flowLMin.toFixed(1)}` : "—"}
+                        <span className="ml-0.5 text-xs font-normal text-muted-foreground">L/min</span>
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Pressure</span>
+                      <p className="text-lg font-bold">
+                        {p.pressureBar !== null ? `${p.pressureBar.toFixed(1)}` : "—"}
+                        <span className="ml-0.5 text-xs font-normal text-muted-foreground">bar</span>
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Pump</span>
+                      <p className="text-lg font-bold">
+                        {p.pumpOn === true ? (
+                          <span className="text-green-600">On</span>
+                        ) : p.pumpOn === false ? (
+                          "Off"
+                        ) : (
+                          "—"
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Moisture history chart */}
       <Card>

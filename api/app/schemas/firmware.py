@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -32,3 +34,21 @@ class CompileRequest(BaseModel):
 class CompileResponse(BaseModel):
     build_id: str
     manifest_url: str
+
+
+class BuildStatusResponse(BaseModel):
+    build_id: str
+    status: str  # "compiling" | "done" | "failed"
+    error: str | None = None
+
+
+class FirmwareBuildOut(BaseModel):
+    build_id: str
+    device_type: str
+    device_id: str
+    status: str
+    error: str | None = None
+    manifest_url: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

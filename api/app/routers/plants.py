@@ -5,7 +5,9 @@ from app.auth import get_current_user, require_setup_complete
 from app.database import get_db
 from app.models.plant import MoistureReading, Plant, PlantSettings
 from app.models.watering import WateringEvent
+from app.mqtt import publish
 from app.schemas.plant import (
+    LedCommandRequest,
     PlantCreate,
     PlantOut,
     PlantSettingsOut,
@@ -131,3 +133,20 @@ def update_plant_settings(
     db.commit()
     db.refresh(settings)
     return settings
+
+
+@router.post("/{plant_id}/led", status_code=status.HTTP_204_NO_CONTENT)
+async def send_led_command(
+    plant_id: int, body: LedCommandRequest, db: Session = Depends(get_db)
+):
+    plant = db.query(Plant).filter(Plant.id == plant_id).first()
+    if not plant:
+        raise HTTPException(status_code=404, detail="Plant not found")
+
+    payload: dict = {"mode": body.mode, "brightness": body.brightness}
+    if body.mode == "solid" and body.color:
+        payload["color"] = body.color
+    elif body.mode == "effect" and body.effect:
+        payload["effect"] = body.effect
+
+    await publish(f"plants/{plant.device_id}/cmd/led", payload)

@@ -35,6 +35,13 @@ class PlantSettingsUpdate(BaseModel):
     auto_watering_seconds: int | None = None
 
 
+class LedCommandRequest(BaseModel):
+    mode: str  # "solid" | "bar" | "effect"
+    brightness: float = 1.0
+    color: str | None = None  # hex e.g. "#FF0000" (solid mode)
+    effect: str | None = None  # effect name (effect mode)
+
+
 class PlantOut(BaseModel):
     id: int
     name: str

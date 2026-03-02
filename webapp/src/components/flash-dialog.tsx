@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { CompileResponse, FirmwareSettings } from "@/lib/types";
+import type { BuildStatus, CompileResponse, FirmwareSettings } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-type Phase = "form" | "compiling" | "ready" | "error";
+export type FlashPhase = "form" | "compiling" | "ready" | "error";
 
 interface FlashDialogProps {
   open: boolean;
@@ -23,6 +23,12 @@ interface FlashDialogProps {
   deviceType: "plant" | "pump";
   deviceId: string;
   deviceName: string;
+  /** Called after compile is kicked off — parent handles polling & inline status */
+  onCompileStarted?: (buildId: string, manifestUrl: string) => void;
+  /** Open dialog directly in this phase (e.g. "ready" or "error" after polling completes) */
+  initialPhase?: FlashPhase;
+  initialError?: string;
+  initialManifestUrl?: string;
 }
 
 export function FlashDialog({
@@ -31,9 +37,13 @@ export function FlashDialog({
   deviceType,
   deviceId,
   deviceName,
+  onCompileStarted,
+  initialPhase,
+  initialError,
+  initialManifestUrl,
 }: FlashDialogProps) {
-  const [phase, setPhase] = useState<Phase>("form");
-  const [error, setError] = useState("");
+  const [phase, setPhase] = useState<FlashPhase>(initialPhase ?? "form");
+  const [error, setError] = useState(initialError ?? "");
 
   const [wifiSsid, setWifiSsid] = useState("");
   const [wifiPassword, setWifiPassword] = useState("");
@@ -45,21 +55,29 @@ export function FlashDialog({
   );
   const [saveForNext, setSaveForNext] = useState(true);
 
-  const [manifestUrl, setManifestUrl] = useState("");
+  const [manifestUrl, setManifestUrl] = useState(initialManifestUrl ?? "");
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (!open) return;
-    setPhase("form");
-    setError("");
-    apiFetch<FirmwareSettings>("/firmware/settings")
-      .then((s) => {
-        setSavedSettings(s);
-        setWifiSsid(s.wifi_ssid);
-        setMqttBroker(s.mqtt_broker);
-        setMqttPort(s.mqtt_port);
-      })
-      .catch(() => {});
-  }, [open]);
+    if (!open) {
+      abortRef.current?.abort();
+      return;
+    }
+    setPhase(initialPhase ?? "form");
+    setError(initialError ?? "");
+    setManifestUrl(initialManifestUrl ?? "");
+
+    if ((initialPhase ?? "form") === "form") {
+      apiFetch<FirmwareSettings>("/firmware/settings")
+        .then((s) => {
+          setSavedSettings(s);
+          setWifiSsid(s.wifi_ssid);
+          setMqttBroker(s.mqtt_broker);
+          setMqttPort(s.mqtt_port);
+        })
+        .catch(() => {});
+    }
+  }, [open, initialPhase, initialError, initialManifestUrl]);
 
   // Load ESP Web Tools script when ready
   useEffect(() => {
@@ -95,7 +113,11 @@ export function FlashDialog({
       }
     }
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
+      // Kick off compilation (returns immediately)
       const result = await apiFetch<CompileResponse>("/firmware/compile", {
         method: "POST",
         body: JSON.stringify({
@@ -108,9 +130,36 @@ export function FlashDialog({
           ota_password: otaPassword || undefined,
         }),
       });
+
+      // If parent handles polling, delegate to it and close dialog
+      if (onCompileStarted) {
+        onCompileStarted(result.build_id, result.manifest_url);
+        onOpenChange(false);
+        return;
+      }
+
+      // Otherwise poll inline (fallback)
       setManifestUrl(result.manifest_url);
-      setPhase("ready");
+      const buildId = result.build_id;
+      while (!controller.signal.aborted) {
+        await new Promise((r) => setTimeout(r, 3000));
+        if (controller.signal.aborted) return;
+
+        const status = await apiFetch<BuildStatus>(
+          `/firmware/status/${buildId}`,
+        );
+        if (status.status === "done") {
+          setPhase("ready");
+          return;
+        }
+        if (status.status === "failed") {
+          setError(status.error ?? "Compilation failed");
+          setPhase("error");
+          return;
+        }
+      }
     } catch (err) {
+      if (controller.signal.aborted) return;
       setError(err instanceof ApiError ? err.detail : "Compilation failed");
       setPhase("error");
     }
@@ -262,6 +311,7 @@ export function FlashDialog({
               <Button
                 slot="activate"
                 className="w-full bg-blue-600 text-white hover:bg-blue-700"
+                onClick={() => onOpenChange(false)}
               >
                 Connect and Flash ESP32
               </Button>
