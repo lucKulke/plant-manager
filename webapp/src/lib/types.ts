@@ -70,3 +70,16 @@ export interface WateringEvent {
   cmd_id: string;
   details: string | null;
 }
+
+export interface FirmwareSettings {
+  wifi_ssid: string;
+  mqtt_broker: string;
+  mqtt_port: string;
+  wifi_password_set: boolean;
+  ota_password_set: boolean;
+}
+
+export interface CompileResponse {
+  build_id: string;
+  manifest_url: string;
+}

@@ -59,6 +59,7 @@ This document is a **high-level overview + implementation plan** for a modular p
 - `api` : FastAPI + SQLAlchemy + Alembic migrations
 - `worker` : APScheduler runner (single instance) + MQTT client
 - `web` : Next.js app
+- `firmware` : ESPHome compilation service (compiles YAML → .bin for web flashing)
 - `db` : **SQLite** file stored on a Docker volume (not a separate container)
 
 > SQLite is a file; you mount a volume (e.g., `./data:/data`) and the API/worker share `/data/app.db`.
@@ -145,36 +146,89 @@ Use a predictable namespace and publish **both telemetry and state** so the serv
 
 ---
 
-## 3) Firmware (ESPHome) high-level requirements
+## 3) Firmware (ESPHome)
 
-## 3.1 Plant Module (valve + moisture + LEDs)
+ESPHome YAML configurations live in `esphome/`. Each device type has its own config file, and `esphome/secrets.yaml` holds WiFi/MQTT credentials.
+
+| File | Description |
+|------|-------------|
+| `esphome/secrets.yaml` | WiFi SSID/password, MQTT broker LAN IP, OTA password |
+| `esphome/plant.yaml` | Plant module config (valve + moisture + LEDs) |
+| `esphome/pump.yaml` | Pump module config (relay + flow + pressure) |
+
+Both configs use `substitutions: device_id:` so the same YAML can be flashed to multiple boards by changing only the device ID.
+
+### 3.1 Plant Module (valve + moisture + LEDs)
+
+**Board:** ESP32-C3 SuperMini
+
+**Wiring:**
+
+| GPIO | Function | Component |
+|------|----------|-----------|
+| GPIO6 | I2C SDA | Adafruit STEMMA Soil Sensor |
+| GPIO7 | I2C SCL | Adafruit STEMMA Soil Sensor |
+| GPIO3 | Relay IN | Solenoid valve (active HIGH) |
+| GPIO4 | Data | WS2812B NeoPixel strip (9 LEDs) |
 
 **Components**
 
-- Moisture sensor → compute **percent** (0–100)
-- Valve control:
-  - subscribe to `cmd/valve_open`
-  - set valve open/close
-  - publish `state/valve` on changes (optionally retained)
-- LED strip (9 LEDs):
-  - moisture bar + status (watering, error, offline)
-  - support additional modes: solid color, effects
-  - subscribe to `cmd/led` and publish `state/led` (optionally retained)
-  - recommended: device can still show moisture bar locally when server is down
+- **Moisture sensor** (Adafruit STEMMA Soil, seesaw I2C at 0x36) → publishes percent (0–100) every 30s
+- **Valve control:**
+  - subscribes to `cmd/valve_open` (parses JSON: `open`, `max_open_s`)
+  - enforces `max_open_s` locally (hard cap 120s) via auto-close timer script
+  - publishes `state/valve` on every change (retained)
+  - `restore_mode: ALWAYS_OFF` — fail-closed on boot
+- **LED strip** (9 WS2812B LEDs):
+  - subscribes to `cmd/led` (modes: `solid`, `bar`, `effect`)
+  - `solid` mode: sets RGB color from hex string + brightness
+  - `bar` mode: moisture bar effect (red→green gradient, proportional fill)
+  - `effect` mode: named effects (`rainbow`, `wipe`)
 
-**Safety constraints (must-have)**
+**Safety constraints**
 
-- **Max valve open time** per command (`max_open_s`)
-- **Fail-closed** on boot: valve default OFF
-- Optional: ignore commands if sensor error / low battery (if applicable)
+- **Max valve open time** per command (`max_open_s`, hard cap 120s)
+- **Fail-closed** on boot: `restore_mode: ALWAYS_OFF`
+- **LWT** publishes `offline` to availability topic on disconnect
 
-## 3.2 Pump Module (relay + flow + pressure)
+### 3.2 Pump Module (relay + flow + pressure)
+
+**Board:** ESP32-C3 SuperMini
+
+**Wiring:**
+
+| GPIO | Function | Component |
+|------|----------|-----------|
+| GPIO3 | Relay IN | Water pump (active HIGH) |
+| GPIO4 | Pulse input | YF-S401 flow sensor (pull-up enabled) |
+| GPIO0 | ADC1_CH0 | Pressure sensor via voltage divider (R1=22kΩ, R2=33kΩ) |
 
 **Components**
 
-- Pump relay:
-  - subscribe to `cmd/pump` or `cmd/pump_run`
-  - start/stop pump
+- **Pump relay:**
+  - subscribes to `cmd/pump` (parses JSON: `on`)
+  - publishes `state/pump` on every change (retained)
+  - `restore_mode: ALWAYS_OFF` — fail-off on boot
+- **Flow sensor** (YF-S401, ~5880 pulses/liter):
+  - `pulse_counter` with 5s update interval
+  - calculates L/min and accumulates total liters
+  - publishes `tele/flow` with `l_min` and `total_l`
+- **Pressure sensor** (0-5 bar analog, 0.5-4.5V output):
+  - ADC with voltage divider compensation (÷0.6) and sensor transfer function
+  - publishes `tele/pressure` with `bar`
+- **Telemetry rate:** 5s while pump is running, 30s while idle
+
+**Safety constraints (all enforced in firmware)**
+
+- **Max pump run time:** 120 seconds hard cap
+- **Dry-run detection:** flow < 0.1 L/min for 10+ consecutive seconds → stop pump
+- **Over-pressure:** pressure > 4.0 bar → stop pump immediately
+- **Fault latch:** after any safety fault, pump won't restart until device reboot
+- **Fail-off** on boot: `restore_mode: ALWAYS_OFF`
+- **LWT** publishes `offline` to availability topic on disconnect
+
+### 3.3 Previous high-level notes (retained for reference)
+
 - Flow sensor:
   - publish flow rate and/or total volume
 - Pressure sensor:
@@ -437,6 +491,24 @@ On message:
 ---
 
 ## 9) Next.js web app (high level)
+
+### Web-Based Firmware Flashing
+
+The system supports flashing ESPHome firmware to ESP32-C3 devices directly from the browser:
+
+1. User goes to a plant or pump detail page and clicks "Flash Firmware"
+2. A dialog pre-fills WiFi/MQTT credentials from saved firmware settings
+3. The server compiles the ESPHome YAML with the device's `device_id` and credentials substituted
+4. The compiled `.bin` is served to the browser
+5. **ESP Web Tools** (Web Serial API) flashes the firmware to a USB-connected ESP32
+
+The compilation runs in a dedicated `firmware` Docker container based on `ghcr.io/esphome/esphome`. Firmware settings (WiFi SSID/password, MQTT broker IP, OTA password) are stored in the database and reused across flashes.
+
+**Endpoints:**
+- `GET/PUT /firmware/settings` — manage saved credentials
+- `POST /firmware/compile` — trigger compilation (returns `build_id` + manifest URL)
+- `GET /firmware/manifest/{build_id}` — ESP Web Tools manifest JSON
+- `GET /firmware/download/{build_id}` — compiled `.bin` binary
 
 ### UI Framework
 

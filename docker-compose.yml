@@ -7,6 +7,15 @@ services:
       - ./infra/mosquitto.conf:/mosquitto/config/mosquitto.conf
       - mosquitto-data:/mosquitto/data
 
+  firmware:
+    build: ./firmware
+    volumes:
+      - ./esphome:/templates:ro
+      - firmware-output:/output
+      - firmware-cache:/cache
+    expose:
+      - "5000"
+
   api:
     build: ./api
     ports:
@@ -17,6 +26,7 @@ services:
       - ./api:/app
     depends_on:
       - mqtt
+      - firmware
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
@@ -43,3 +53,5 @@ services:
 
 volumes:
   mosquitto-data:
+  firmware-output:
+  firmware-cache:

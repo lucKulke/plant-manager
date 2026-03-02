@@ -8,6 +8,7 @@ import { SettingsForm } from "@/components/settings-form";
 import { ScheduleForm } from "@/components/schedule-form";
 import { WaterButton } from "@/components/water-button";
 import { WateringHistory } from "@/components/watering-history";
+import { FlashDialog } from "@/components/flash-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,6 +32,7 @@ export default function PlantDetailPage() {
   const [showScheduleForm, setShowScheduleForm] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [flashOpen, setFlashOpen] = useState(false);
 
   const load = useCallback(async () => {
     const [p, s, e, g] = await Promise.all([
@@ -85,6 +87,13 @@ export default function PlantDetailPage() {
             {plant.enabled ? "Enabled" : "Disabled"}
           </Badge>
           <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setFlashOpen(true)}
+          >
+            Flash Firmware
+          </Button>
+          <Button
             variant="destructive"
             size="sm"
             onClick={handleDelete}
@@ -94,6 +103,14 @@ export default function PlantDetailPage() {
           </Button>
         </div>
       </div>
+
+      <FlashDialog
+        open={flashOpen}
+        onOpenChange={setFlashOpen}
+        deviceType="plant"
+        deviceId={plant.device_id}
+        deviceName={plant.name}
+      />
 
       {/* Group */}
       <section>

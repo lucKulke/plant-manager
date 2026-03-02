@@ -20,6 +20,12 @@ export function Nav() {
           >
             Groups
           </Link>
+          <Link
+            href="/firmware-settings"
+            className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Firmware
+          </Link>
         </div>
         <Button variant="outline" size="sm" onClick={logout}>
           Sign Out

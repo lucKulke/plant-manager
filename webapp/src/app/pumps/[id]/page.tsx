@@ -4,6 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import type { Group, Pump, PumpReading } from "@/lib/types";
+import { FlashDialog } from "@/components/flash-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -36,6 +37,7 @@ export default function PumpDetailPage() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
+  const [flashOpen, setFlashOpen] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -96,6 +98,13 @@ export default function PumpDetailPage() {
             {pump.enabled ? "Enabled" : "Disabled"}
           </Button>
           <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setFlashOpen(true)}
+          >
+            Flash Firmware
+          </Button>
+          <Button
             variant="destructive"
             size="sm"
             onClick={handleDelete}
@@ -105,6 +114,14 @@ export default function PumpDetailPage() {
           </Button>
         </div>
       </div>
+
+      <FlashDialog
+        open={flashOpen}
+        onOpenChange={setFlashOpen}
+        deviceType="pump"
+        deviceId={pump.device_id}
+        deviceName={pump.name}
+      />
 
       {/* Group */}
       <section>

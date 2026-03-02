@@ -1,0 +1,262 @@
+# Pump Module — ESP32-C3 SuperMini
+# Hardware: Water pump (relay), YF-S401 flow sensor, analog pressure sensor (0-5 bar)
+#
+# GPIO assignments:
+#   GPIO3 — Pump relay (active HIGH)
+#   GPIO4 — YF-S401 flow sensor pulse input
+#   GPIO0 — Pressure sensor ADC (via R1=22kΩ R2=33kΩ voltage divider)
+
+substitutions:
+  device_id: "pump_01"   # Change per device — used in all MQTT topics
+
+esphome:
+  name: "pump-${device_id}"
+  friendly_name: "Pump Module ${device_id}"
+  on_boot:
+    priority: -100
+    then:
+      - switch.turn_off: pump_relay
+      - script.execute: telemetry_loop
+
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  framework:
+    type: arduino
+
+# ── WiFi ──────────────────────────────────────────────────────────────────────
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "pump-${device_id}-fallback"
+    password: !secret ota_password
+
+captive_portal:
+
+# ── OTA + Logging ─────────────────────────────────────────────────────────────
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+logger:
+  level: INFO
+
+# ── MQTT ──────────────────────────────────────────────────────────────────────
+
+mqtt:
+  broker: !secret mqtt_broker
+  port: !secret mqtt_port
+  client_id: "pump-${device_id}"
+  discovery: false
+  birth_message:
+    topic: "pump/${device_id}/availability"
+    payload: "online"
+    retain: true
+  will_message:
+    topic: "pump/${device_id}/availability"
+    payload: "offline"
+    retain: true
+  on_connect:
+    - mqtt.publish:
+        topic: "pump/${device_id}/availability"
+        payload: "online"
+        retain: true
+  on_message:
+    # ── Pump command ─────────────────────────────────────────────────────
+    - topic: "pump/${device_id}/cmd/pump"
+      then:
+        - lambda: |-
+            auto doc = JsonDocument();
+            DeserializationError err = deserializeJson(doc, x.c_str());
+            if (err) {
+              ESP_LOGW("pump", "pump cmd parse error: %s", err.c_str());
+              return;
+            }
+            bool on = doc["on"].as<bool>();
+
+            if (on) {
+              if (!id(pump_fault)) {
+                id(pump_relay).turn_on();
+                id(pump_run_elapsed_s) = 0;
+                id(no_flow_elapsed_s) = 0;
+                id(safety_watchdog).execute();
+              } else {
+                ESP_LOGW("pump", "Pump fault active — ignoring start command. Reboot to clear.");
+              }
+            } else {
+              id(pump_relay).turn_off();
+              id(safety_watchdog).stop();
+              id(pump_run_elapsed_s) = 0;
+              id(no_flow_elapsed_s) = 0;
+            }
+
+# ── Sensors ───────────────────────────────────────────────────────────────────
+
+sensor:
+  # ── Flow sensor (YF-S401 pulse counter) ────────────────────────────────
+  # YF-S401: ~5880 pulses/liter → 5880 pulses/min = 1 L/min
+  - platform: pulse_counter
+    id: flow_pulse_counter
+    pin:
+      number: GPIO4
+      mode:
+        input: true
+        pullup: true
+    name: "Flow Pulse Counter"
+    unit_of_measurement: "pulses/min"
+    update_interval: 5s
+    on_value:
+      - lambda: |-
+          // Convert pulses/min to L/min
+          float l_min = x / 5880.0f;
+          id(flow_l_min) = l_min;
+          // Accumulate total volume: pulses in 5s window
+          float liters_window = (x / 60.0f * 5.0f) / 5880.0f;
+          id(total_flow_l) += liters_window;
+
+  # ── Pressure sensor (ADC, 0-5 bar) ────────────────────────────────────
+  # Sensor: 0.5V = 0 bar, 4.5V = 5 bar (linear, 5V supply)
+  # Voltage divider: R1=22kΩ, R2=33kΩ → ratio = 33/(22+33) = 0.6
+  # At 5V sensor output: 5V * 0.6 = 3.0V (within ESP32-C3 3.3V ADC range)
+  - platform: adc
+    id: pressure_adc
+    pin: GPIO0
+    name: "Pressure ADC"
+    update_interval: 5s
+    attenuation: 11dB
+    filters:
+      - multiply: 3.3       # Normalize 0-1.0 → 0-3.3V
+      - lambda: |-
+          // Undo voltage divider: Vin = Vadc / 0.6
+          float vin = x / 0.6f;
+          // Sensor transfer function: 0.5V=0bar, 4.5V=5bar
+          float bar = (vin - 0.5f) / 4.0f * 5.0f;
+          if (bar < 0.0f) bar = 0.0f;
+          if (bar > 6.0f) bar = 6.0f;
+          return bar;
+    on_value:
+      - lambda: |-
+          id(pressure_bar) = x;
+          // Over-pressure safety check
+          if (id(pump_relay).state && x > 4.0f) {
+            ESP_LOGW("pump", "OVER-PRESSURE: %.2f bar — stopping pump", x);
+            id(pump_relay).turn_off();
+            id(safety_watchdog).stop();
+            id(pump_fault) = true;
+          }
+
+# ── Switches ──────────────────────────────────────────────────────────────────
+
+switch:
+  - platform: gpio
+    id: pump_relay
+    name: "Pump"
+    pin:
+      number: GPIO3
+      mode:
+        output: true
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - mqtt.publish_json:
+          topic: "pump/${device_id}/state/pump"
+          payload: |-
+            root["on"] = true;
+          retain: true
+    on_turn_off:
+      - mqtt.publish_json:
+          topic: "pump/${device_id}/state/pump"
+          payload: |-
+            root["on"] = false;
+          retain: true
+
+# ── Globals ───────────────────────────────────────────────────────────────────
+
+globals:
+  - id: flow_l_min
+    type: float
+    restore_value: false
+    initial_value: "0.0"
+  - id: total_flow_l
+    type: float
+    restore_value: false
+    initial_value: "0.0"
+  - id: pressure_bar
+    type: float
+    restore_value: false
+    initial_value: "0.0"
+  - id: pump_run_elapsed_s
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: no_flow_elapsed_s
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: pump_fault
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+# ── Scripts ───────────────────────────────────────────────────────────────────
+
+script:
+  # Safety watchdog — checks max run time, dry-run, and over-pressure
+  - id: safety_watchdog
+    mode: restart
+    then:
+      - while:
+          condition:
+            switch.is_on: pump_relay
+          then:
+            - delay: 1s
+            - lambda: |-
+                id(pump_run_elapsed_s) += 1;
+
+                // Hard cap: 120 seconds max run time
+                if (id(pump_run_elapsed_s) >= 120) {
+                  ESP_LOGW("pump", "MAX RUN TIME (120s) — stopping pump");
+                  id(pump_relay).turn_off();
+                  id(pump_fault) = true;
+                  return;
+                }
+
+                // Dry-run detection: flow < 0.1 L/min for 10+ seconds
+                if (id(flow_l_min) < 0.1f) {
+                  id(no_flow_elapsed_s) += 1;
+                  if (id(no_flow_elapsed_s) >= 10) {
+                    ESP_LOGW("pump", "DRY-RUN detected — stopping pump");
+                    id(pump_relay).turn_off();
+                    id(pump_fault) = true;
+                    return;
+                  }
+                } else {
+                  id(no_flow_elapsed_s) = 0;
+                }
+
+  # Telemetry loop — publishes flow + pressure at variable rate
+  - id: telemetry_loop
+    mode: queued
+    then:
+      - while:
+          condition:
+            lambda: return true;
+          then:
+            - mqtt.publish_json:
+                topic: "pump/${device_id}/tele/flow"
+                payload: |-
+                  root["l_min"] = id(flow_l_min);
+                  root["total_l"] = id(total_flow_l);
+            - mqtt.publish_json:
+                topic: "pump/${device_id}/tele/pressure"
+                payload: |-
+                  root["bar"] = id(pressure_bar);
+            - if:
+                condition:
+                  switch.is_on: pump_relay
+                then:
+                  - delay: 5s
+                else:
+                  - delay: 30s

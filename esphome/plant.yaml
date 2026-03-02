@@ -1,0 +1,251 @@
+# Plant Module — ESP32-C3 SuperMini
+# Hardware: Adafruit STEMMA Soil Sensor (I2C), solenoid valve (relay), WS2812B 9-LED strip
+#
+# GPIO assignments:
+#   GPIO3 — Valve relay (active HIGH)
+#   GPIO4 — WS2812B LED data
+#   GPIO6 — I2C SDA (Stemma soil sensor)
+#   GPIO7 — I2C SCL (Stemma soil sensor)
+
+substitutions:
+  device_id: "plant_01"   # Change per device — used in all MQTT topics
+
+esphome:
+  name: "plant-${device_id}"
+  friendly_name: "Plant Module ${device_id}"
+  on_boot:
+    priority: -100
+    then:
+      - switch.turn_off: valve_relay
+
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  framework:
+    type: arduino
+
+# ── WiFi ──────────────────────────────────────────────────────────────────────
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "plant-${device_id}-fallback"
+    password: !secret ota_password
+
+captive_portal:
+
+# ── OTA + Logging ─────────────────────────────────────────────────────────────
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+logger:
+  level: INFO
+
+# ── MQTT ──────────────────────────────────────────────────────────────────────
+
+mqtt:
+  broker: !secret mqtt_broker
+  port: !secret mqtt_port
+  client_id: "plant-${device_id}"
+  discovery: false
+  birth_message:
+    topic: "plants/${device_id}/availability"
+    payload: "online"
+    retain: true
+  will_message:
+    topic: "plants/${device_id}/availability"
+    payload: "offline"
+    retain: true
+  on_connect:
+    - mqtt.publish:
+        topic: "plants/${device_id}/availability"
+        payload: "online"
+        retain: true
+  on_message:
+    # ── Valve command ────────────────────────────────────────────────────
+    - topic: "plants/${device_id}/cmd/valve_open"
+      then:
+        - lambda: |-
+            auto doc = JsonDocument();
+            DeserializationError err = deserializeJson(doc, x.c_str());
+            if (err) {
+              ESP_LOGW("plant", "valve cmd parse error: %s", err.c_str());
+              return;
+            }
+            bool open_valve = doc["open"].as<bool>();
+            int max_s = doc["max_open_s"] | 30;
+            if (max_s <= 0 || max_s > 120) max_s = 120;
+
+            if (open_valve) {
+              id(valve_relay).turn_on();
+              id(valve_timeout_s) = max_s;
+              id(valve_timer).execute();
+            } else {
+              id(valve_relay).turn_off();
+              id(valve_timer).stop();
+            }
+
+    # ── LED command ──────────────────────────────────────────────────────
+    - topic: "plants/${device_id}/cmd/led"
+      then:
+        - lambda: |-
+            auto doc = JsonDocument();
+            DeserializationError err = deserializeJson(doc, x.c_str());
+            if (err) {
+              ESP_LOGW("plant", "led cmd parse error: %s", err.c_str());
+              return;
+            }
+            std::string mode = doc["mode"] | "solid";
+            float brightness = doc["brightness"] | 1.0f;
+            if (brightness < 0.0f) brightness = 0.0f;
+            if (brightness > 1.0f) brightness = 1.0f;
+
+            auto call = id(led_strip).make_call();
+            call.set_brightness(brightness);
+            call.set_state(true);
+
+            if (mode == "solid") {
+              const char* hex = doc["color"] | "#FFFFFF";
+              uint32_t color = strtoul(hex + 1, nullptr, 16);
+              uint8_t r = (color >> 16) & 0xFF;
+              uint8_t g = (color >> 8)  & 0xFF;
+              uint8_t b = color & 0xFF;
+              call.set_rgb(r / 255.0f, g / 255.0f, b / 255.0f);
+              call.set_effect("None");
+            } else if (mode == "bar") {
+              int value = doc["value"] | 0;
+              if (value < 0) value = 0;
+              if (value > 100) value = 100;
+              id(led_bar_value) = (float)value;
+              call.set_effect("Moisture Bar");
+            } else if (mode == "effect") {
+              const char* eff = doc["effect"] | "rainbow";
+              call.set_effect(eff);
+            }
+            call.perform();
+
+# ── External Components ────────────────────────────────────────────────────────
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/jbeker/stemma_soil_sensor
+    components: [stemma_soil_sensor]
+
+# ── I2C ───────────────────────────────────────────────────────────────────────
+
+i2c:
+  sda: GPIO6
+  scl: GPIO7
+  scan: true
+  id: i2c_bus
+
+# ── Sensors ───────────────────────────────────────────────────────────────────
+
+sensor:
+  - platform: stemma_soil_sensor
+    id: soil_sensor
+    address: 0x36
+    moisture:
+      id: raw_moisture
+      name: "Soil Moisture"
+      filters:
+        # Stemma returns raw capacitance (~200 dry, ~2000 wet) → scale to 0-100%
+        - clamp:
+            min_value: 200
+            max_value: 2000
+        - lambda: return (x - 200.0f) / (2000.0f - 200.0f) * 100.0f;
+        - clamp:
+            min_value: 0
+            max_value: 100
+      on_value:
+        - mqtt.publish_json:
+            topic: "plants/${device_id}/tele/moisture_percent"
+            payload: |-
+              root["value"] = x;
+    temperature:
+      id: soil_temperature
+      name: "Soil Temperature"
+    update_interval: 30s
+
+# ── Switches ──────────────────────────────────────────────────────────────────
+
+switch:
+  - platform: gpio
+    id: valve_relay
+    name: "Valve"
+    pin:
+      number: GPIO3
+      mode:
+        output: true
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - mqtt.publish_json:
+          topic: "plants/${device_id}/state/valve"
+          payload: |-
+            root["open"] = true;
+          retain: true
+    on_turn_off:
+      - mqtt.publish_json:
+          topic: "plants/${device_id}/state/valve"
+          payload: |-
+            root["open"] = false;
+          retain: true
+
+# ── Light (WS2812B NeoPixel) ─────────────────────────────────────────────────
+
+light:
+  - platform: neopixelbus
+    id: led_strip
+    type: GRB
+    variant: WS2812X
+    pin: GPIO4
+    num_leds: 9
+    name: "Plant LED Strip"
+    effects:
+      - addressable_rainbow:
+          name: "rainbow"
+          speed: 10
+          width: 50
+      - addressable_color_wipe:
+          name: "wipe"
+      - addressable_lambda:
+          name: "Moisture Bar"
+          update_interval: 500ms
+          lambda: |-
+            int lit = (int)round(id(led_bar_value) / 100.0f * it.size());
+            for (int i = 0; i < it.size(); i++) {
+              if (i < lit) {
+                float frac = (float)lit / it.size();
+                uint8_t r = (uint8_t)((1.0f - frac) * 255);
+                uint8_t g = (uint8_t)(frac * 255);
+                it[i] = Color(r, g, 0);
+              } else {
+                it[i] = Color(0, 0, 0);
+              }
+            }
+
+# ── Globals ───────────────────────────────────────────────────────────────────
+
+globals:
+  - id: valve_timeout_s
+    type: int
+    restore_value: false
+    initial_value: "30"
+  - id: led_bar_value
+    type: float
+    restore_value: false
+    initial_value: "0.0"
+
+# ── Scripts ───────────────────────────────────────────────────────────────────
+
+script:
+  # Valve auto-close timer — restart mode resets countdown on new commands
+  - id: valve_timer
+    mode: restart
+    then:
+      - delay: !lambda return id(valve_timeout_s) * 1000;
+      - switch.turn_off: valve_relay
