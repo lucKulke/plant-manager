@@ -13,10 +13,12 @@ export function SettingsForm({
   plantId,
   settings,
   onSaved,
+  formId,
 }: {
   plantId: number;
   settings: PlantSettings;
   onSaved: (s: PlantSettings) => void;
+  formId?: string;
 }) {
   const [mode, setMode] = useState(settings.mode);
   const [threshold, setThreshold] = useState(settings.auto_threshold_percent);
@@ -51,7 +53,7 @@ export function SettingsForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form id={formId} onSubmit={handleSubmit} className="space-y-4">
       <div>
         <Label>Mode</Label>
         <div className="mt-1 flex gap-2">
@@ -110,9 +112,11 @@ export function SettingsForm({
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      <Button type="submit" disabled={saving}>
-        {saving ? "Saving..." : "Save Settings"}
-      </Button>
+      {!formId && (
+        <Button type="submit" disabled={saving}>
+          {saving ? "Saving..." : "Save Settings"}
+        </Button>
+      )}
     </form>
   );
 }

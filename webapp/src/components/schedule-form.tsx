@@ -1,55 +1,42 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { apiFetch, ApiError } from "@/lib/api";
-import type { Schedule } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 
+export interface DraftSchedule {
+  id?: number;
+  cron_expression: string;
+  watering_seconds: number;
+  enabled: boolean;
+}
+
 export function ScheduleForm({
-  plantId,
   schedule,
-  onSaved,
+  onDone,
   onCancel,
 }: {
-  plantId: number;
-  schedule?: Schedule;
-  onSaved: (s: Schedule) => void;
+  schedule?: DraftSchedule;
+  onDone: (draft: DraftSchedule) => void;
   onCancel: () => void;
 }) {
   const [cron, setCron] = useState(schedule?.cron_expression ?? "0 7 * * *");
   const [seconds, setSeconds] = useState(schedule?.watering_seconds ?? 10);
   const [enabled, setEnabled] = useState(schedule?.enabled ?? true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
 
   const isEdit = !!schedule;
 
-  async function handleSubmit(e: FormEvent) {
+  function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    setSaving(true);
-    setError("");
-    try {
-      const url = isEdit
-        ? `/schedules/${schedule.id}`
-        : `/plants/${plantId}/schedules`;
-      const saved = await apiFetch<Schedule>(url, {
-        method: isEdit ? "PUT" : "POST",
-        body: JSON.stringify({
-          cron_expression: cron,
-          watering_seconds: seconds,
-          enabled,
-        }),
-      });
-      onSaved(saved);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to save");
-    } finally {
-      setSaving(false);
-    }
+    onDone({
+      id: schedule?.id,
+      cron_expression: cron,
+      watering_seconds: seconds,
+      enabled,
+    });
   }
 
   return (
@@ -93,11 +80,9 @@ export function ScheduleForm({
             </Label>
           </div>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
-
           <div className="flex gap-2">
-            <Button type="submit" size="sm" disabled={saving}>
-              {saving ? "Saving..." : isEdit ? "Update" : "Add Schedule"}
+            <Button type="submit" size="sm">
+              {isEdit ? "Update" : "Add"}
             </Button>
             <Button type="button" variant="outline" size="sm" onClick={onCancel}>
               Cancel

@@ -136,10 +136,7 @@ export function AppSidebar() {
             {groups.length === 0 && (
               <SidebarMenuItem>
                 <SidebarMenuButton asChild>
-                  <Link
-                    href="/groups/new"
-                    className="text-muted-foreground"
-                  >
+                  <Link href="/groups/new" className="text-muted-foreground">
                     <Plus />
                     <span>Create first group</span>
                   </Link>
@@ -150,8 +147,7 @@ export function AppSidebar() {
               const isGroupActive =
                 pathname === `/groups/${group.id}` ||
                 group.plants.some((p) => pathname === `/plants/${p.id}`) ||
-                (group.pump !== null &&
-                  pathname === `/pumps/${group.pump.id}`);
+                (group.pump !== null && pathname === `/pumps/${group.pump.id}`);
 
               return (
                 <Collapsible
@@ -194,9 +190,7 @@ export function AppSidebar() {
                           <SidebarMenuSubItem>
                             <SidebarMenuSubButton
                               asChild
-                              isActive={
-                                pathname === `/pumps/${group.pump.id}`
-                              }
+                              isActive={pathname === `/pumps/${group.pump.id}`}
                             >
                               <Link href={`/pumps/${group.pump.id}`}>
                                 <Gauge className="size-3" />
